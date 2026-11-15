@@ -231,11 +231,16 @@ def _remote_file_bytes(path: str) -> int:
     return int(size) if size.isdigit() else 0
 
 
+def _remote_file_bytes(path: str) -> int:
+    size = adb.shell(f'stat -c %s "{path}" 2>/dev/null').strip()
+    return int(size) if size.isdigit() else 0
+
+
 def pull(work: Work, report: Report = _noop, cancel: threading.Event | None = None) -> dict:
     """``wamove pull`` with byte progress over the database and every media folder.
 
-    A copy that was interrupted is started over; only a copy that was already decrypted is kept,
-    so a front end can simply retry.
+    An interrupted copy is started over; only a copy that was already decrypted is kept, so a
+    front end can simply retry.
     """
     cancel = cancel or threading.Event()
     root = adb.whatsapp_root()
@@ -279,12 +284,19 @@ def decrypt(work: Work, key: bytes, report: Report = _noop) -> dict:
     report(Event("copy", "progress", pct=None, phase="decrypt"))
     crypt15.decrypt_file(work.crypt15, work.msgstore, key)
     os.chmod(work.msgstore, 0o600)
-    report(Event("copy", "progress", pct=None, phase="read"))
-    return summary(work)
+    report(Event("copy", "progress", pct=0, phase="read"))
+    return summary(work, report=report)
 
 
-def summary(work: Work, exclude_groups: bool = False) -> dict:
-    archive = load_archive(work, None, exclude_groups=exclude_groups)
+def _reader_progress(step: str, report: Report):
+    def on_progress(done: int, total: int) -> None:
+        report(Event(step, "progress", pct=100 * done / total if total else None, phase="read",
+                     data={"done": done, "total": total}))
+    return on_progress
+
+
+def summary(work: Work, exclude_groups: bool = False, report: Report = _noop, step: str = "copy") -> dict:
+    archive = load_archive(work, None, exclude_groups=exclude_groups, on_progress=_reader_progress(step, report))
     stats = archive.stats()
     stamps = [m.timestamp_ms for c in archive.chats for m in c.messages if m.timestamp_ms]
     stats.update({
@@ -401,7 +413,10 @@ def build(work: Work, report: Report = _noop, cancel: threading.Event | None = N
     pristine = work.pristine / udid
     check_password(pristine, password)
     report(Event("prepare", "progress", pct=0, phase="read"))
-    archive = load_archive(work, None, exclude_groups=exclude_groups)
+    archive = load_archive(work, None, exclude_groups=exclude_groups,
+                           on_progress=lambda done, total: report(Event("prepare", "progress",
+                                                                        pct=10 * done / total if total else 0,
+                                                                        phase="read")))
     stats = archive.stats()
     if work.build.exists() or (work.patched / udid).exists():
         raise Failure("build output already exists; preserve it and use a separate workspace for another attempt")
