@@ -170,3 +170,8 @@ wamove started from [wabridge](https://github.com/parvesh-rm/wabridge) by Parves
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).
+
+## Programmatic use
+
+`wamove.api` exposes every step as a function with a progress callback, for graphical front ends
+such as [Chatport](https://github.com/rhamaxv/chatport). The CLI is unchanged.
