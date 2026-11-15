@@ -62,16 +62,36 @@ def device() -> str:
     return next((p.split(":", 1)[1] for p in ready[0] if p.startswith("model:")), ready[0][0])
 
 
+def whatsapp_roots() -> list[str]:
+    """Every folder that can hold a WhatsApp account: the main one and, with multi-account, accounts/<id>."""
+    found: list[str] = []
+    for base in ROOTS:
+        if shell(f'[ -d "{base}" ] && echo yes').strip() != "yes":
+            continue
+        found.append(base)
+        for name in shell(f'ls "{base}/accounts" 2>/dev/null').split():
+            found.append(f"{base}/accounts/{name}")
+    return found
+
+
 def whatsapp_root() -> str:
-    for root in ROOTS:
+    """The account folder with the newest end-to-end encrypted backup."""
+    ready: list[tuple[int, str]] = []
+    older = False
+    for root in whatsapp_roots():
         listing = shell(f'ls "{root}/Databases" 2>/dev/null')
         if "msgstore.db.crypt15" in listing:
-            return root
-        if "msgstore" in listing:
-            raise AdbError(
-                "the phone only has an older backup format: in WhatsApp turn on Settings > Chats > Chat backup > "
-                "End-to-end encrypted backup with a 64-digit key, then tap Back up"
-            )
+            stamp = shell(f'stat -c %Y "{root}/Databases/msgstore.db.crypt15" 2>/dev/null').strip()
+            ready.append((int(stamp) if stamp.isdigit() else 0, root))
+        elif "msgstore" in listing:
+            older = True
+    if ready:
+        return max(ready)[1]
+    if older:
+        raise AdbError(
+            "the phone only has an older backup format: in WhatsApp turn on Settings > Chats > Chat backup > "
+            "End-to-end encrypted backup with a 64-digit key, then tap Back up"
+        )
     raise AdbError("no WhatsApp backup on the phone: in WhatsApp open Settings > Chats > Chat backup and tap Back up")
 
 
