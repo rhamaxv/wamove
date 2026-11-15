@@ -499,7 +499,45 @@ class Writer:
         return None
 
 
-def verify(path: Path) -> list[str]:
+COUNTED = {
+    "media_broken": "{n} messages point at a missing or mismatched media item",
+    "orphans": "{n} messages belong to no chat",
+    "group_broken": "{n} incoming group messages have a missing or mismatched sender",
+    "duplicates": "{n} messages are duplicated within a chat",
+}
+
+
+def verify_counts(path: Path) -> dict[str, int]:
+    """How many rows of each kind look wrong. WhatsApp's own database is not always clean, so a
+    build compares these counts before and after the import instead of demanding zero."""
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    counts: dict[str, int] = {}
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "ZWAMEDIAITEM" in tables:
+        counts["media_broken"] = conn.execute(
+            "SELECT COUNT(*) FROM ZWAMESSAGE m LEFT JOIN ZWAMEDIAITEM i ON i.Z_PK = m.ZMEDIAITEM "
+            "WHERE m.ZMEDIAITEM IS NOT NULL AND (i.Z_PK IS NULL OR i.ZMESSAGE <> m.Z_PK)").fetchone()[0]
+    counts["orphans"] = conn.execute(
+        "SELECT COUNT(*) FROM ZWAMESSAGE m LEFT JOIN ZWACHATSESSION s ON s.Z_PK = m.ZCHATSESSION "
+        "WHERE s.Z_PK IS NULL").fetchone()[0]
+    if "ZWAGROUPMEMBER" in tables:
+        counts["group_broken"] = conn.execute(
+            "SELECT COUNT(*) FROM ZWAMESSAGE m JOIN ZWACHATSESSION s ON s.Z_PK=m.ZCHATSESSION "
+            "LEFT JOIN ZWAGROUPMEMBER g ON g.Z_PK=m.ZGROUPMEMBER "
+            "WHERE s.ZSESSIONTYPE=1 AND m.ZISFROMME=0 AND m.ZMESSAGETYPE NOT IN (6,10) "
+            "AND (g.Z_PK IS NULL OR g.ZCHATSESSION IS NOT m.ZCHATSESSION)").fetchone()[0]
+    counts["duplicates"] = conn.execute(
+        "SELECT COUNT(*) FROM (SELECT m.ZCHATSESSION, m.ZSTANZAID, m.ZISFROMME, "
+        "CASE WHEN s.ZSESSIONTYPE=1 THEN COALESCE(m.ZGROUPMEMBER,0) ELSE 0 END "
+        "FROM ZWAMESSAGE m JOIN ZWACHATSESSION s ON s.Z_PK=m.ZCHATSESSION WHERE m.ZSTANZAID IS NOT NULL "
+        "GROUP BY 1, 2, 3, 4 HAVING COUNT(*) > 1)").fetchone()[0]
+    conn.close()
+    return counts
+
+
+def verify(path: Path, baseline: dict[str, int] | None = None) -> list[str]:
+    """Problems with the converted database. With a `baseline` from before the import, only rows the
+    import added count; without one every wrong row does."""
     conn = sqlite3.connect(path)
     problems: list[str] = []
     result = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -512,31 +550,10 @@ def verify(path: Path) -> list[str]:
             highest = conn.execute(f"SELECT MAX(Z_PK) FROM {table} WHERE Z_ENT=?", (ent,)).fetchone()[0] or 0
             if highest > (maximum or 0):
                 problems.append(f"{table}: Z_MAX {maximum} is below the highest Z_PK {highest}")
-    if "ZWAMEDIAITEM" in tables:
-        broken = conn.execute(
-            "SELECT COUNT(*) FROM ZWAMESSAGE m LEFT JOIN ZWAMEDIAITEM i ON i.Z_PK = m.ZMEDIAITEM "
-            "WHERE m.ZMEDIAITEM IS NOT NULL AND (i.Z_PK IS NULL OR i.ZMESSAGE <> m.Z_PK)").fetchone()[0]
-        if broken:
-            problems.append(f"{broken} messages point at a missing or mismatched media item")
-    orphans = conn.execute(
-        "SELECT COUNT(*) FROM ZWAMESSAGE m LEFT JOIN ZWACHATSESSION s ON s.Z_PK = m.ZCHATSESSION "
-        "WHERE s.Z_PK IS NULL").fetchone()[0]
-    if orphans:
-        problems.append(f"{orphans} messages belong to no chat")
-    if "ZWAGROUPMEMBER" in tables:
-        broken = conn.execute(
-            "SELECT COUNT(*) FROM ZWAMESSAGE m JOIN ZWACHATSESSION s ON s.Z_PK=m.ZCHATSESSION "
-            "LEFT JOIN ZWAGROUPMEMBER g ON g.Z_PK=m.ZGROUPMEMBER "
-            "WHERE s.ZSESSIONTYPE=1 AND m.ZISFROMME=0 AND m.ZMESSAGETYPE NOT IN (6,10) "
-            "AND (g.Z_PK IS NULL OR g.ZCHATSESSION IS NOT m.ZCHATSESSION)").fetchone()[0]
-        if broken:
-            problems.append(f"{broken} incoming group messages have a missing or mismatched sender")
-    duplicates = conn.execute(
-        "SELECT COUNT(*) FROM (SELECT m.ZCHATSESSION, m.ZSTANZAID, m.ZISFROMME, "
-        "CASE WHEN s.ZSESSIONTYPE=1 THEN COALESCE(m.ZGROUPMEMBER,0) ELSE 0 END "
-        "FROM ZWAMESSAGE m JOIN ZWACHATSESSION s ON s.Z_PK=m.ZCHATSESSION WHERE m.ZSTANZAID IS NOT NULL "
-        "GROUP BY 1, 2, 3, 4 HAVING COUNT(*) > 1)").fetchone()[0]
-    if duplicates:
-        problems.append(f"{duplicates} messages are duplicated within a chat")
     conn.close()
+    before = baseline or {}
+    for key, count in verify_counts(path).items():
+        added = count - before.get(key, 0)
+        if added > 0:
+            problems.append(COUNTED[key].format(n=added))
     return problems

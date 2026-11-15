@@ -250,3 +250,17 @@ def test_backup_age_reads_manifest_time(tmp_path: Path) -> None:
     (work.full / "udid1" / "Manifest.db").write_bytes(b"x")
     age = api.backup_age(work, "udid1")
     assert age is not None and age < 5
+
+
+def test_verify_tolerates_problems_that_were_already_there(tmp_path: Path) -> None:
+    from fixtures import make_chatstorage
+    db = tmp_path / "ChatStorage.sqlite"
+    make_chatstorage(db)
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO ZWAMESSAGE (Z_PK, Z_ENT, Z_OPT, ZCHATSESSION, ZMESSAGETYPE, ZISFROMME) "
+                 "VALUES (99998, 1, 1, NULL, 14, 0)")
+    conn.commit(); conn.close()
+    strict = chatstorage.verify(db)
+    assert any("belong to no chat" in p for p in strict)
+    baseline = chatstorage.verify_counts(db)
+    assert chatstorage.verify(db, baseline) == [p for p in strict if "belong to no chat" not in p]
