@@ -220,3 +220,11 @@ def test_build_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert reference.get_entry_by_domain_and_path(WA_DOMAIN, "Message/" + path).read_bytes()
     assert reference.get_entry_by_domain_and_path(WA_DOMAIN, CHATSTORAGE + "-wal").read_bytes() == b""
     assert reference.get_entry_by_domain_and_path(WA_DOMAIN, CHATSTORAGE + "-shm").read_bytes() == b""
+
+
+def test_key_opens_accepts_non_database_files(tmp_path: Path) -> None:
+    from wamove import api
+    sample = tmp_path / "backup_settings.json.crypt15"
+    sample.write_bytes(encrypt_crypt15(b'{"backup": true}'))
+    assert api.key_opens(sample, crypt15.parse_key(KEY))
+    assert not api.key_opens(sample, bytes(32))

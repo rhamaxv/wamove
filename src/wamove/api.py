@@ -164,11 +164,29 @@ def key_sample(work: Work) -> Path:
 
 
 def key_opens(sample: Path, key: bytes) -> bool:
+    """True when the AES-GCM tag of any .crypt15 file checks out under this key.
+
+    Only the right key passes the tag check, so a tiny settings file is enough: the content does not
+    have to be a database the way `crypt15.decrypt` requires.
+    """
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    data = sample.read_bytes()
     try:
-        crypt15.decrypt(sample.read_bytes(), key)
-        return True
+        offset, ivs = crypt15._header(data)
     except crypt15.Crypt15Error:
         return False
+    body = data[offset:]
+    gcm = AESGCM(crypt15.derive_aes_key(key))
+    for iv in ivs:
+        for trailer in (0, 16):
+            try:
+                gcm.decrypt(iv, body[:len(body) - trailer], None)
+                return True
+            except InvalidTag:
+                continue
+    return False
 
 
 def _folder_bytes(path: Path) -> int:
