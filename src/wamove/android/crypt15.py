@@ -86,6 +86,26 @@ def _header(data: bytes) -> tuple[int, list[bytes]]:
     return start + length, ivs
 
 
+def decrypt_raw(data: bytes, aes_key: bytes) -> bytes:
+    """Decrypt any .crypt15 file (stickers, settings) with the derived AES key; no content check."""
+    offset, ivs = _header(data)
+    body = data[offset:]
+    gcm = AESGCM(aes_key)
+    for iv in ivs:
+        for trailer in (0, 16):
+            try:
+                plain = gcm.decrypt(iv, body[:len(body) - trailer], None)
+            except InvalidTag:
+                continue
+            if plain[:1] == b"\x78":
+                try:
+                    return zlib.decompress(plain)
+                except zlib.error:
+                    return plain
+            return plain
+    raise Crypt15Error("the key does not open this file")
+
+
 def decrypt(data: bytes, root_key: bytes) -> bytes:
     offset, ivs = _header(data)
     body = data[offset:]
