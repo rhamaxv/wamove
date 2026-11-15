@@ -226,37 +226,50 @@ def _pull_watched(remote: str, local: Path, watch: Path, on_bytes: Callable[[int
             process.kill()
 
 
+def _remote_file_bytes(path: str) -> int:
+    size = adb.shell(f'stat -c %s "{path}" 2>/dev/null').strip()
+    return int(size) if size.isdigit() else 0
+
+
 def pull(work: Work, report: Report = _noop, cancel: threading.Event | None = None) -> dict:
-    """``wamove pull`` with byte progress. Refuses to overwrite an earlier copy, like the CLI."""
+    """``wamove pull`` with byte progress over the database and every media folder.
+
+    A copy that was interrupted is started over; only a copy that was already decrypted is kept,
+    so a front end can simply retry.
+    """
     cancel = cancel or threading.Event()
     root = adb.whatsapp_root()
-    if work.crypt15.exists() or work.msgstore.exists() or work.contacts.exists() or work.media.exists():
+    if work.msgstore.exists():
         raise Failure("this workspace already contains Android data; choose a new --work folder to preserve it")
+    shutil.rmtree(work.android, ignore_errors=True)
     work.android.mkdir(mode=0o700, parents=True, exist_ok=True)
-    report(Event("copy", "progress", pct=0, phase="chats"))
-    adb.pull(f"{root}/Databases/msgstore.db.crypt15", work.crypt15.parent)
-    names = adb.contacts()
-    work.contacts.write_text(json.dumps(names, ensure_ascii=False, indent=1), encoding="utf-8")
+    database = f"{root}/Databases/msgstore.db.crypt15"
+    db_bytes = _remote_file_bytes(database)
     folders = adb.media_dirs(root)
     sizes = {folder: adb.remote_bytes(f"{root}/Media/{folder}") for folder in folders}
-    needed = sum(sizes.values())
+    needed = db_bytes + sum(sizes.values())
     free = shutil.disk_usage(work.root).free
     if needed > free:
         raise NotEnoughSpace(needed, free)
-    finished = 0
+
+    def progress(done: int, phase: str) -> None:
+        report(Event("copy", "progress", pct=100 * done / needed if needed else 100, phase=phase,
+                     data={"done_bytes": done, "total_bytes": needed}))
+
+    progress(0, "chats")
+    _pull_watched(database, work.crypt15.parent, work.crypt15.parent,
+                  lambda landed: progress(min(landed, db_bytes), "chats"), cancel)
+    finished = db_bytes
+    names = adb.contacts()
+    work.contacts.write_text(json.dumps(names, ensure_ascii=False, indent=1), encoding="utf-8")
     for folder in folders:
         if cancel.is_set():
             raise Cancelled()
-
-        def on_bytes(landed: int, folder=folder) -> None:
-            done = finished + min(landed, sizes[folder])
-            report(Event("copy", "progress", pct=100 * done / needed if needed else 100, phase=folder,
-                         data={"done_bytes": done, "total_bytes": needed}))
-
-        _pull_watched(f"{root}/Media/{folder}", work.media, work.media / folder, on_bytes, cancel)
+        _pull_watched(f"{root}/Media/{folder}", work.media, work.media / folder,
+                      lambda landed, folder=folder: progress(finished + min(landed, sizes[folder]), folder), cancel)
         finished += sizes[folder]
-    report(Event("copy", "progress", pct=100, phase="media", data={"done_bytes": needed, "total_bytes": needed}))
-    return {"contacts": len(names), "media_bytes": needed, "folders": sizes}
+    progress(needed, "media")
+    return {"contacts": len(names), "media_bytes": needed - db_bytes, "folders": sizes}
 
 
 def decrypt(work: Work, key: bytes, report: Report = _noop) -> dict:
