@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .android import adb, crypt15
+from .android import stickers as android_stickers
+from .ios import stickers as ios_stickers
 from .cli import CHATSTORAGE, Failure, Work, load_archive
 from .ios import backup as ios_backup
 from .ios import chatstorage, device
@@ -268,6 +270,9 @@ def pull(work: Work, report: Report = _noop, cancel: threading.Event | None = No
     finished = db_bytes
     names = adb.contacts()
     work.contacts.write_text(json.dumps(names, ensure_ascii=False, indent=1), encoding="utf-8")
+    if adb.shell(f'[ -d "{root}/Backups/Stickers" ] && echo yes').strip() == "yes":  # favourites, a few MB
+        report(Event("copy", "progress", pct=100 * finished / needed if needed else 100, phase="stickers"))
+        adb.pull(f"{root}/Backups/Stickers", work.sticker_backups.parent)
     for folder in folders:
         if cancel.is_set():
             raise Cancelled()
@@ -285,6 +290,9 @@ def decrypt(work: Work, key: bytes, report: Report = _noop) -> dict:
     report(Event("copy", "progress", pct=None, phase="decrypt"))
     crypt15.decrypt_file(work.crypt15, work.msgstore, key)
     os.chmod(work.msgstore, 0o600)
+    if work.sticker_backups.is_dir():
+        report(Event("copy", "progress", pct=None, phase="stickers"))
+        android_stickers.decrypt_backups(work.sticker_backups, work.stickers, key)
     report(Event("copy", "progress", pct=0, phase="read"))
     return summary(work, report=report)
 
@@ -427,8 +435,21 @@ class _CountingWriter(chatstorage.Writer):
         return session
 
 
+def _import_stickers(work: Work, target: ios_backup.Backup) -> tuple[int, int]:
+    """Favourite stickers from Android into the iPhone's Sticker.sqlite. Returns (found, added)."""
+    favorites = android_stickers.favorites(work.sticker_backups, work.stickers, work.media / "WhatsApp Stickers",
+                                           work.msgstore)
+    database = work.build / ios_stickers.STICKER_DB
+    if not favorites or not target.read(ios_stickers.STICKER_DB, database):
+        return len(favorites), 0
+    added, _skipped = ios_stickers.import_favorites(
+        database, favorites, lambda relative, source: target.put(relative, source))
+    target.put(ios_stickers.STICKER_DB, database)
+    return len(favorites), added
+
+
 def build(work: Work, report: Report = _noop, cancel: threading.Event | None = None,
-          password: str | None = None, exclude_groups: bool = False) -> dict:
+          password: str | None = None, exclude_groups: bool = False, stickers: bool = True) -> dict:
     """``wamove build`` with progress, writing the same ``report.json`` the CLI's restore checks."""
     cancel = cancel or threading.Event()
     udid = work.udid()
@@ -492,13 +513,18 @@ def build(work: Work, report: Report = _noop, cancel: threading.Event | None = N
             if done % 50 == 0 or done == total:
                 report(Event("prepare", "progress", pct=70 + 25 * done / max(total, 1), phase="media",
                              data={"done": done, "total": total}))
-        report(Event("prepare", "progress", pct=95, phase="check"))
+        stickers_added = stickers_found = 0
+        if stickers:
+            report(Event("prepare", "progress", pct=95, phase="stickers"))
+            stickers_found, stickers_added = _import_stickers(work, target)
+        report(Event("prepare", "progress", pct=97, phase="check"))
         problems = target.check()
         if problems:
             raise Failure("the modified backup failed its checks:\n  " + "\n  ".join(problems[:20]))
     result.update({"completed": True, "messages_written": written.messages_written,
                    "duplicates_skipped": written.messages_skipped, "media_linked": written.media_linked,
                    "media_missing": written.media_missing, "thumbnails": written.thumbnails,
+                   "stickers_found": stickers_found, "stickers_added": stickers_added,
                    "manifest_sha256": hashlib.sha256((work.patched / udid / "Manifest.db").read_bytes()).hexdigest()})
     work.report.write_text(json.dumps(result, indent=2), encoding="utf-8")
     report(Event("prepare", "progress", pct=100, phase="check"))
@@ -510,6 +536,8 @@ def build(work: Work, report: Report = _noop, cancel: threading.Event | None = N
         "media_found": written.media_linked,
         "media_missing": written.media_missing,
         "thumbnails": written.thumbnails,
+        "stickers_found": stickers_found,
+        "stickers_added": stickers_added,
         "coverage": result,
     }
 

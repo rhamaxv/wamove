@@ -14,8 +14,10 @@ from pathlib import Path
 
 from . import __version__
 from .android import adb, crypt15, msgstore
+from .android import stickers as android_stickers
 from .ios import backup as ios_backup
 from .ios import chatstorage, device
+from .ios import stickers as ios_stickers
 from .model import Archive
 
 CHATSTORAGE = ios_backup.CHATSTORAGE
@@ -33,6 +35,8 @@ class Work:
         self.msgstore = self.android / "msgstore.db"
         self.media = self.android / "Media"
         self.contacts = self.android / "contacts.json"
+        self.sticker_backups = self.android / "Backups" / "Stickers"   # WhatsApp's encrypted favourites
+        self.stickers = self.android / "stickers"                        # the same, decrypted
         self.full = root / "ios" / "full"
         self.pristine = root / "ios" / "pristine"
         self.patched = root / "ios" / "patched"
@@ -134,6 +138,9 @@ def pull(work: Work, args: argparse.Namespace) -> None:
     names = adb.contacts()
     work.contacts.write_text(json.dumps(names, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"  {len(names)} contact numbers saved for naming chats")
+    if adb.shell(f'[ -d "{root}/Backups/Stickers" ] && echo yes').strip() == "yes":
+        adb.pull(f"{root}/Backups/Stickers", work.sticker_backups.parent)
+        print(f"  {len(android_stickers.wanted_hashes(work.sticker_backups))} favourite stickers copied")
     if args.no_media:
         return
     needed = adb.remote_bytes(f"{root}/Media")
@@ -153,6 +160,9 @@ def decrypt(work: Work, args: argparse.Namespace) -> None:
     key = crypt15.parse_key(secret("WAMOVE_KEY", "64-digit WhatsApp backup key", args.key_file))
     crypt15.decrypt_file(work.crypt15, work.msgstore, key)
     os.chmod(work.msgstore, 0o600)
+    if work.sticker_backups.is_dir():
+        plain = android_stickers.decrypt_backups(work.sticker_backups, work.stickers, key)
+        print(f"  {len(plain)} favourite stickers decrypted")
     print("Decrypted the Android chats:")
     print_stats(load_archive(work, args.contacts))
 
@@ -227,6 +237,14 @@ def build(work: Work, args: argparse.Namespace) -> None:
                 sys.stdout.flush()
         if total:
             sys.stdout.write("\n")
+        if not args.no_stickers:
+            favorites = android_stickers.favorites(work.sticker_backups, work.stickers,
+                                                   work.media / "WhatsApp Stickers", work.msgstore)
+            sticker_db = work.build / ios_stickers.STICKER_DB
+            if favorites and target.read(ios_stickers.STICKER_DB, sticker_db):
+                added, skipped = ios_stickers.import_favorites(sticker_db, favorites, target.put)
+                target.put(ios_stickers.STICKER_DB, sticker_db)
+                print(f"  {added} favourite stickers added, {skipped} were already on the iPhone")
         problems = target.check()
         if problems:
             raise Failure("the modified backup failed its checks:\n  " + "\n  ".join(problems[:20]))
@@ -318,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     command = commands.add_parser("build", help="add the Android chats to the WhatsApp-only copy")
     command.add_argument("--no-media", action="store_true")
     command.add_argument("--exclude-groups", action="store_true")
+    command.add_argument("--no-stickers", action="store_true", help="leave favourite stickers out")
     commands.add_parser("inspect", help="show what is in the Android chats and the iPhone backup")
     command = commands.add_parser("restore", help="put the built WhatsApp data on the iPhone")
     command.add_argument("--accept-partial", action="store_true", help="acknowledge omissions in the coverage report")
