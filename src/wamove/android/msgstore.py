@@ -84,7 +84,9 @@ def _is_voice(mime: str | None, path: str | None) -> bool:
     return bool(mime and "opus" in mime.lower()) or bool(path and "/WhatsApp Voice Notes/" in path)
 
 
-def parse(path: Path, contacts: dict[str, str] | None = None, *, exclude_groups: bool = False) -> Archive:
+def parse(path: Path, contacts: dict[str, str] | None = None, *, exclude_groups: bool = False,
+          on_progress=None) -> Archive:
+    """`on_progress(done_rows, total_rows)` is called every few thousand message rows when given."""
     contacts = contacts or {}
     conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -179,8 +181,11 @@ def parse(path: Path, contacts: dict[str, str] | None = None, *, exclude_groups:
     skipped: Counter[str] = Counter()
     downgraded: Counter[int] = Counter()
     source_messages = 0
+    total_rows = conn.execute("SELECT COUNT(*) FROM message").fetchone()[0] if on_progress else 0
     for row in conn.execute(message_sql):
         source_messages += 1
+        if on_progress and source_messages % 2000 == 0:
+            on_progress(source_messages, total_rows)
         chat = by_row.get(row["chat_id"])
         if chat is None:
             skipped["excluded_group" if row["chat_id"] in excluded_groups else "excluded_chat"] += 1

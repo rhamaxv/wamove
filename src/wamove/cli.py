@@ -69,13 +69,13 @@ def gigabytes(value: int) -> str:
     return f"{value / 1e9:.1f} GB"
 
 
-def load_archive(work: Work, vcf: Path | None, *, exclude_groups: bool = False) -> Archive:
+def load_archive(work: Work, vcf: Path | None, *, exclude_groups: bool = False, on_progress=None) -> Archive:
     if not work.msgstore.is_file():
         raise Failure("the Android chats are not decrypted yet; run `wamove decrypt` first")
     contacts = json.loads(work.contacts.read_text(encoding="utf-8")) if work.contacts.is_file() else {}
     if vcf:
         contacts.update(msgstore.load_vcf(vcf))
-    return msgstore.parse(work.msgstore, contacts, exclude_groups=exclude_groups)
+    return msgstore.parse(work.msgstore, contacts, exclude_groups=exclude_groups, on_progress=on_progress)
 
 
 def print_stats(archive: Archive) -> None:

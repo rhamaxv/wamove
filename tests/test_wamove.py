@@ -228,3 +228,14 @@ def test_key_opens_accepts_non_database_files(tmp_path: Path) -> None:
     sample.write_bytes(encrypt_crypt15(b'{"backup": true}'))
     assert api.key_opens(sample, crypt15.parse_key(KEY))
     assert not api.key_opens(sample, bytes(32))
+
+
+def test_parse_reports_progress(tmp_path: Path) -> None:
+    from fixtures import make_msgstore
+    db = tmp_path / "msgstore.db"
+    make_msgstore(db)
+    seen: list[tuple[int, int]] = []
+    # small fixture: fewer than 2000 rows, so no calls, but the total is counted without error
+    archive = msgstore.parse(db, {}, on_progress=lambda d, tot: seen.append((d, tot)))
+    assert archive.source_messages >= 1
+    assert all(tot >= d for d, tot in seen)
