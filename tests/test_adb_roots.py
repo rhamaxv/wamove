@@ -7,6 +7,7 @@ MAIN = "/sdcard/Android/media/com.whatsapp/WhatsApp"
 
 
 def fake_shell(tree: dict[str, str]):
+    adb.device = lambda: "Fake"  # the phone is present in these tests
     """Answer the few shell commands whatsapp_root uses from a path -> listing map."""
     def shell(command: str) -> str:
         if command.startswith("[ -d "):
@@ -53,4 +54,12 @@ def test_older_format_in_secondary_account_is_reported(monkeypatch):
 def test_no_backup_anywhere(monkeypatch):
     monkeypatch.setattr(adb, "shell", fake_shell({f"{MAIN}/Media": ""}))
     with pytest.raises(adb.AdbError, match="no WhatsApp backup"):
+        adb.whatsapp_root()
+
+
+def test_unplugged_phone_is_not_a_missing_backup(monkeypatch):
+    def no_phone():
+        raise adb.AdbError("no Android phone found: turn on USB debugging, plug it in and allow this computer")
+    monkeypatch.setattr(adb, "device", no_phone)
+    with pytest.raises(adb.AdbError, match="no Android phone found"):
         adb.whatsapp_root()

@@ -64,6 +64,7 @@ def device() -> str:
 
 def whatsapp_roots() -> list[str]:
     """Every folder that can hold a WhatsApp account: the main one and, with multi-account, accounts/<id>."""
+    device()  # an unplugged or unauthorized phone is reported as such, not as a missing backup
     found: list[str] = []
     for base in ROOTS:
         if shell(f'[ -d "{base}" ] && echo yes').strip() != "yes":
