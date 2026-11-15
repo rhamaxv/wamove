@@ -239,3 +239,14 @@ def test_parse_reports_progress(tmp_path: Path) -> None:
     archive = msgstore.parse(db, {}, on_progress=lambda d, tot: seen.append((d, tot)))
     assert archive.source_messages >= 1
     assert all(tot >= d for d, tot in seen)
+
+
+def test_backup_age_reads_manifest_time(tmp_path: Path) -> None:
+    from wamove import api
+    from wamove.cli import Work
+    work = Work(tmp_path)
+    assert api.backup_age(work, "udid1") is None
+    (work.full / "udid1").mkdir(parents=True)
+    (work.full / "udid1" / "Manifest.db").write_bytes(b"x")
+    age = api.backup_age(work, "udid1")
+    assert age is not None and age < 5

@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -351,12 +352,29 @@ def check_password(path: Path, password: str | None) -> None:
     ios_backup.Backup(path, password).close()
 
 
-def backup(work: Work, report: Report = _noop, password: str | None = None, udid: str | None = None) -> dict:
-    """``wamove backup``: full iPhone backup, then a WhatsApp-only copy."""
-    if any(path.exists() for path in (work.full, work.pristine, work.patched)):
-        raise Failure("iPhone backup data already exists; choose a new --work folder to preserve it")
+def backup_age(work: Work, udid: str) -> float | None:
+    """Seconds since a full backup of this iPhone was taken into this work folder, or None."""
+    manifest = work.full / udid / "Manifest.db"
+    if not manifest.is_file():
+        return None
+    return max(0.0, time.time() - manifest.stat().st_mtime)
+
+
+def backup(work: Work, report: Report = _noop, password: str | None = None, udid: str | None = None,
+           reuse: bool = False) -> dict:
+    """``wamove backup``: full iPhone backup, then a WhatsApp-only copy.
+
+    With ``reuse`` an earlier full backup of the same iPhone is kept and only the WhatsApp copy is
+    remade, which saves the slow part when a transfer is attempted again.
+    """
     phone = device.phone(udid)
     work.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for stale in (work.pristine, work.patched):
+        shutil.rmtree(stale, ignore_errors=True)
+    if reuse and backup_age(work, phone.udid) is not None:
+        report(Event("backup", "progress", pct=100, phase="phone"))
+        return _keep_whatsapp(work, report, phone, password)
+    shutil.rmtree(work.full, ignore_errors=True)
     free = shutil.disk_usage(work.root).free
     if phone.used_bytes and phone.used_bytes > free:
         raise NotEnoughSpace(phone.used_bytes, free)
@@ -380,6 +398,10 @@ def backup(work: Work, report: Report = _noop, password: str | None = None, udid
     work.full.mkdir(parents=True, exist_ok=True)
     report(Event("backup", "progress", pct=0, phase="phone"))
     _with_passcode_events("backup", report, lambda: asyncio.run(go()))
+    return _keep_whatsapp(work, report, phone, password)
+
+
+def _keep_whatsapp(work: Work, report: Report, phone: device.Phone, password: str | None) -> dict:
     full = work.full / phone.udid
     check_password(full, password)
     report(Event("backup", "progress", pct=None, phase="copy"))
@@ -391,7 +413,7 @@ def backup(work: Work, report: Report = _noop, password: str | None = None, udid
         count = saved.count()
     report(Event("backup", "progress", pct=100, phase="copy"))
     return {"udid": phone.udid, "entries": count, "used_bytes": phone.used_bytes,
-            "encrypted": ios_backup.is_encrypted(full)}
+            "encrypted": ios_backup.is_encrypted(full), "reused": backup_age(work, phone.udid)}
 
 
 class _CountingWriter(chatstorage.Writer):
