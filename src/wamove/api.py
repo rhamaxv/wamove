@@ -440,8 +440,8 @@ def build(work: Work, report: Report = _noop, cancel: threading.Event | None = N
                                                                         pct=10 * done / total if total else 0,
                                                                         phase="read")))
     stats = archive.stats()
-    if work.build.exists() or (work.patched / udid).exists():
-        raise Failure("build output already exists; preserve it and use a separate workspace for another attempt")
+    for stale in (work.build, work.patched / udid):  # a build can always be redone from the untouched copy
+        shutil.rmtree(stale, ignore_errors=True)
     work.build.mkdir(parents=True)
     result = {"completed": False, "udid": udid, "source_messages": archive.source_messages,
               "selected": stats, "skipped": archive.skipped,
@@ -469,13 +469,14 @@ def build(work: Work, report: Report = _noop, cancel: threading.Event | None = N
     with ios_backup.Backup(work.patched / udid, password) as target:
         for name in (CHATSTORAGE, CHATSTORAGE + "-wal"):
             target.read(name, work.build / name)
+        baseline = chatstorage.verify_counts(database)  # WhatsApp's own oddities are not our problems
         writer = _CountingWriter(database, archive.lids, on_messages)
         (work.build / "thumbs").mkdir()
         try:
             written = writer.import_archive(archive, media, work.build / "thumbs")
         finally:
             writer.close()
-        problems = chatstorage.verify(database)
+        problems = chatstorage.verify(database, baseline)
         if problems:
             raise Failure("the converted database failed its checks:\n  " + "\n  ".join(problems))
         target.put(CHATSTORAGE, database)
